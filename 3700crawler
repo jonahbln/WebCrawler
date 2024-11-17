@@ -2,9 +2,19 @@
 
 import argparse
 import socket
+import ssl
+import urllib.parse
+
+print(ssl.__file__)  #
 
 DEFAULT_SERVER = "proj5.3700.network"
+SERVER = "fakebook.khoury.northeastern.edu"
+IP = "129.10.110.70"
 DEFAULT_PORT = 443
+
+LOGIN_PASSWORD = "b69dc6eb8235482b5c329f8714c582874b8cfd1ee8ce090fed82015e5c101554"
+LOGIN_USERNAME = "dankowskihealey.f"
+
 
 class Crawler:
     def __init__(self, args):
@@ -13,21 +23,119 @@ class Crawler:
         self.username = args.username
         self.password = args.password
 
-    def run(self):
-        request = "GET / HTTP/1.0\r\n\r\n"
+    def parse_http_response(self, response):
+        # Split response into headers and body
+        parts = response.split("\r\n\r\n", 1)  # Split only once
+        if len(parts) < 2:
+            print("Invalid HTTP response format")
+            return None, None
 
+        headers_raw, body = parts
+        headers = {}
+
+        # Split headers into lines and parse each header
+        header_lines = headers_raw.split("\r\n")
+        for line in header_lines[1:]:  # Skip the first line (HTTP status line)
+            if ": " in line:
+                name, value = line.split(": ", 1)
+                headers[name.lower()] = value  
+
+        return headers, body
+
+    # Example usage
+    def get_csrf_token_from_headers(self, headers):
+        # Look for a specific header value
+        if "set-cookie" in headers:
+            print(f"Set-Cookie: {headers['set-cookie']}")
+            # Extract the CSRF token from the cookie if needed
+            # Example: Split cookies by ';' and find the token
+            cookies = headers["set-cookie"].split(";")
+            for cookie in cookies:
+                if "csrftoken" in cookie.lower():
+                    csrf_token = cookie.split("=")[1]
+                    print(f"Extracted CSRF token from Set-Cookie: {csrf_token}")
+                    return csrf_token
+        return None
+
+    def run(self):
+        request = (
+            f"GET /accounts/login/ HTTP/1.1\r\n"
+            f"Host: {self.server}\r\n"
+            f"Connection: close\r\n\r\n"
+        )
         print("Request to %s:%d" % (self.server, self.port))
         print(request)
-        mysocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        mysocket.connect((self.server, self.port))
-        mysocket.send(request.encode('ascii'))
+        
+        raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw_socket.connect((self.server, self.port))
+        print(f"Connected to {self.server}:{self.port} via TCP")
 
-        data = mysocket.recv(1000)
+        # Create an SSL context and wrap the socket
+        context = ssl._create_unverified_context()
+        secure_socket = context.wrap_socket(raw_socket, server_hostname=self.server)
+
+        # Connect to the server
+        #secure_socket.connect((self.server, self.port))
+        print(request.encode('ascii'))
+        secure_socket.send(request.encode('ascii'))
+
+        data = secure_socket.recv(1000)
         print("Response:\n%s" % data.decode('ascii'))
+        headers, body = self.parse_http_response(data.decode('ascii'))
+        print("Parsed Headers:", headers)
+        print("Body:", body)
+
+        # Extract CSRF token
+        csrf_token = self.get_csrf_token_from_headers(headers)
+        print("CSRF Token:", csrf_token)
+
+        # Prepare POST request body
+        body = {
+            "username": LOGIN_USERNAME,
+            "password": LOGIN_PASSWORD,
+            "csrfmiddlewaretoken": csrf_token,
+            "next": ""
+        }
+        encoded_body = urllib.parse.urlencode(body)
+
+        # Prepare HTTP POST request
+        headers = {
+            "Host": self.server,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Length": str(len(encoded_body)),
+            "Connection": "close",
+        }
+        headers_string = "\r\n".join(f"{key}: {value}" for key, value in headers.items())
+
+        request = (
+            f"POST /accounts/login/ HTTP/1.1\r\n"
+            f"{headers_string}\r\n\r\n"
+            f"{encoded_body}"
+        )
+
+        secure_socket.send(request.encode("ascii"))
+
+        # Read the response
+        response = b""
+        while True:
+            data = secure_socket.recv(4096)
+            if not data:
+                break
+            response += data
+
+        secure_socket.close()
+        print("Closed TLS connection")
+
+        # Decode and print the response
+        print("HTTP Response:\n")
+        print(response.decode("ascii", errors="replace"))
+
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='crawl Fakebook')
-    parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="The server to crawl")
+    parser.add_argument('-s', dest="server", type=str, default=SERVER, help="The server to crawl")
     parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="The port to use")
     parser.add_argument('username', type=str, help="The username to use")
     parser.add_argument('password', type=str, help="The password to use")
