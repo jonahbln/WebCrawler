@@ -84,6 +84,17 @@ class Crawler:
             print(f"Extracted CSRF token from HTML: {csrf_token}")
             return csrf_token
         return None
+    
+    def get_sites_from_html(self, html):
+        # Extract crawlable sites from the html landing page
+        # i = 0
+        # while i < len(html):
+
+        #     if match:
+        #         site_list = match.group(1)
+        #         print(f"Extracted sites from HTML: {site_list}")
+        #         return site_list
+        return re.findall(r'<li><a href="(.+?)">', html)
 
     def read_response(self, socket):
         response = b""  # Initialize an empty response buffer
@@ -193,7 +204,7 @@ class Crawler:
             "Cookie": f"csrftoken={csrf_token}",  # Include CSRF token in Cookie
             "Connection": "keep-alive",
           #  "Referer": f"https://{self.server}/accounts/login/",
-         #   "Origin": f"https://{self.server}",
+            #   "Origin": f"https://{self.server}",
            # "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
         }
         headers_string = "\r\n".join(f"{key}: {value}" for key, value in headers.items())
@@ -241,9 +252,32 @@ class Crawler:
         secure_socket.send(get_request.encode("ascii"))
         response = self.read_response(secure_socket)
         print(response)
+        headers, body = self.parse_http_response(response)
+        session_id = self.get_session_id_from_headers(headers)
 
+        print("Pulled sites from html")
+        sites = self.get_sites_from_html(response)
+        for site in sites:     
+            request = (
+                f"GET {site} HTTP/1.1\r\n"
+                f"Host: {self.server}\r\n"
+                f"Connection: keep-alive\r\n"
+                f"Cookie: sessionid={session_id}\r\n"
+                f"Referer: https://{self.server}/accounts/login/\r\n"
+                f"Origin: https://{self.server}\r\n"
+                f"Accept-Language: en-us\r\n\r\n"
+            )
+            # Connect to the server
+            print(request.encode('ascii'))
+            secure_socket.send(request.encode('ascii'))
+            time.sleep(0.1)  # 100ms delay before reading
+            
+            data = self.read_response(secure_socket); 
 
-
+            print("Response:\n%s" % data)
+            headers, body = self.parse_http_response(data)
+            print("Parsed Headers:", headers)
+            print("Body:", body)
 
 
 if __name__ == "__main__":
