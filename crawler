@@ -58,7 +58,7 @@ class Crawler:
             if site in visited_sites or "fakebook" not in site:
                 continue
 
-            # visit the site using GET request
+            # visit the site, storing the http response
             response = self.visit_site(site)
             visited_sites.append(site)
             sites_searched += 1
@@ -66,9 +66,9 @@ class Crawler:
             # Handle errors if necessary
             err = self.handle_errors(response)
             if err:
-                if err == "abandon": # if 403 or 404 error, abandon this page and move on
+                if err == "abandon": # if 403 or 404 error, abandon this page alltogether and move on
                     continue
-                elif err == "retry": # if 503 error, retry this site until successful
+                elif err == "retry": # if 503 error, add this site back to the queue and move on
                     visited_sites.remove(site)
                     sites.append(site)
                     sites_searched -= 1
@@ -78,7 +78,7 @@ class Crawler:
                     next_site = re.match(r'Location: (.+?)\n', headers)
                     sites.insert(next_site, 0)
                     continue
-                else:
+                else: # this would be a real problem...
                     print(RuntimeError("Unrecognized HTTP error detected: " + response))
                     continue
 
@@ -118,7 +118,6 @@ class Crawler:
 
         return headers, body
 
-    # Example usage
     def get_csrf_token_from_headers(self, headers):
         # Look for a specific header value
         if "set-cookie" in headers:
@@ -131,7 +130,6 @@ class Crawler:
                     return csrf_token
         return None
 
-    # Example usage
     def get_session_id_from_headers(self, headers):
         # Look for a specific header value
         if "set-cookie" in headers:
