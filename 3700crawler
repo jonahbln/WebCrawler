@@ -4,6 +4,8 @@ import argparse
 import socket
 import ssl
 import urllib.parse
+import re
+import time
 
 print(ssl.__file__)  #
 
@@ -46,7 +48,7 @@ class Crawler:
     def get_csrf_token_from_headers(self, headers):
         # Look for a specific header value
         if "set-cookie" in headers:
-            print(f"Set-Cookie: {headers['set-cookie']}")
+            print(f"in get csrf token Set-Cookie: {headers['set-cookie']}")
             # Extract the CSRF token from the cookie if needed
             # Example: Split cookies by ';' and find the token
             cookies = headers["set-cookie"].split(";")
@@ -57,11 +59,88 @@ class Crawler:
                     return csrf_token
         return None
 
+    # Example usage
+    def get_session_id_from_headers(self, headers):
+        # Look for a specific header value
+        if "set-cookie" in headers:
+            print(f"Set-Cookie for session: {headers['set-cookie']}")
+            # Extract the CSRF token from the cookie if needed
+            # Example: Split cookies by ';' and find the token
+            cookies = headers["set-cookie"].split(";")
+            for cookie in cookies:
+                if "sessionid" in cookie.lower():
+                    session = cookie.split("=")[1]
+                    print(f"Extracted session id from Set-Cookie: {session}")
+                    return session
+        return None
+
+
+    def get_csrf_token_from_html(self, body):
+        # Extract CSRF token from the HTML form
+        print("BODY TO SEARCH FOR CSRF", body)
+        match = re.search(r'name="csrfmiddlewaretoken" value="(.+?)"', body)
+        if match:
+            csrf_token = match.group(1)
+            print(f"Extracted CSRF token from HTML: {csrf_token}")
+            return csrf_token
+        return None
+
+    def read_response(self, socket):
+        response = b""  # Initialize an empty response buffer
+        headers = None
+        content_length = None
+        body_start = None
+
+        while True:
+            try:
+                # Read data in chunks
+                chunk = socket.recv(1028)  # Adjust chunk size as needed
+                if not chunk:  # No more data from the server
+                    break
+                response += chunk
+
+                # Parse headers if not already parsed
+                if headers is None:
+                    try:
+                        # Split headers and body if they exist
+                        headers, body_start = response.split(b"\r\n\r\n", 1)
+                        headers = headers.decode("ascii", errors="replace")
+                        
+                        # Look for Content-Length header
+                        for line in headers.split("\r\n"):
+                            if line.lower().startswith("content-length:"):
+                                content_length = int(line.split(":")[1].strip())
+                                break
+                    except ValueError:
+                        # Headers not fully received yet, continue reading
+                        continue
+
+                # If Content-Length is known, stop when full body is received
+                if content_length is not None:
+                    if len(body_start) >= content_length:
+                        break
+            except TimeoutError:  # SSL-wrapped socket raises TimeoutError
+                print("Socket read timed out.")
+                break
+            except Exception as e:  # Handle all other exceptions
+                print(f"Error reading from socket: {e}")
+                break
+
+        # Decode the full response and return it as a single string
+        try:
+            return response.decode("ascii", errors="replace")
+        except Exception as e:
+            print(f"Error decoding response: {e}")
+            return response.decode("ascii", errors="ignore")  # Fallback decoding
+
+
+
+
     def run(self):
         request = (
             f"GET /accounts/login/ HTTP/1.1\r\n"
             f"Host: {self.server}\r\n"
-            f"Connection: close\r\n\r\n"
+            f"Connection: keep-alive\r\n\r\n"
         )
         print("Request to %s:%d" % (self.server, self.port))
         print(request)
@@ -73,27 +152,35 @@ class Crawler:
         # Create an SSL context and wrap the socket
         context = ssl._create_unverified_context()
         secure_socket = context.wrap_socket(raw_socket, server_hostname=self.server)
+        secure_socket.settimeout(5)
+
 
         # Connect to the server
         #secure_socket.connect((self.server, self.port))
         print(request.encode('ascii'))
         secure_socket.send(request.encode('ascii'))
+        time.sleep(0.1)  # 100ms delay before reading
+        
+        data = self.read_response(secure_socket); 
 
-        data = secure_socket.recv(1000)
-        print("Response:\n%s" % data.decode('ascii'))
-        headers, body = self.parse_http_response(data.decode('ascii'))
+        print("Response:\n%s" % data)
+        headers, body = self.parse_http_response(data)
         print("Parsed Headers:", headers)
         print("Body:", body)
+
+
 
         # Extract CSRF token
         csrf_token = self.get_csrf_token_from_headers(headers)
         print("CSRF Token:", csrf_token)
+        html_csrf_token = self.get_csrf_token_from_html(data)  
+
 
         # Prepare POST request body
         body = {
             "username": LOGIN_USERNAME,
             "password": LOGIN_PASSWORD,
-            "csrfmiddlewaretoken": csrf_token,
+            "csrfmiddlewaretoken": html_csrf_token,
             "next": ""
         }
         encoded_body = urllib.parse.urlencode(body)
@@ -103,7 +190,11 @@ class Crawler:
             "Host": self.server,
             "Content-Type": "application/x-www-form-urlencoded",
             "Content-Length": str(len(encoded_body)),
-            "Connection": "close",
+            "Cookie": f"csrftoken={csrf_token}",  # Include CSRF token in Cookie
+            "Connection": "keep-alive",
+          #  "Referer": f"https://{self.server}/accounts/login/",
+         #   "Origin": f"https://{self.server}",
+           # "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
         }
         headers_string = "\r\n".join(f"{key}: {value}" for key, value in headers.items())
 
@@ -112,23 +203,45 @@ class Crawler:
             f"{headers_string}\r\n\r\n"
             f"{encoded_body}"
         )
+        
+        print("HTTP POST Request:\n", request)
+
 
         secure_socket.send(request.encode("ascii"))
+        time.sleep(0.1)
 
-        # Read the response
-        response = b""
-        while True:
-            data = secure_socket.recv(4096)
-            if not data:
-                break
-            response += data
 
-        secure_socket.close()
-        print("Closed TLS connection")
+        # Read the full HTTP response
+        response = self.read_response(secure_socket)
 
-        # Decode and print the response
-        print("HTTP Response:\n")
-        print(response.decode("ascii", errors="replace"))
+        headers, body = self.parse_http_response(response)
+        print("headers")
+        print(headers)
+        print("body")
+        print(body)
+        #csrf_token = self.get_csrf_token_from_headers(headers)
+        session_id = self.get_session_id_from_headers(headers)
+
+        print("Raw Response:\n", response)
+        #print("New CSRF Header Cookie:\n", csrf_token)
+        print("Session ID :\n", session_id)
+
+        # NEW: Send GET request to /fakebook/
+        get_request = (
+            f"GET /fakebook/ HTTP/1.1\r\n"
+            f"Host: {self.server}\r\n"
+            f"Connection: keep-alive\r\n"
+            f"Cookie: sessionid={session_id}\r\n"
+            f"\r\n"
+        )
+
+        print("HTTP GET Request to /fakebook/:\n", get_request)
+
+        # Send GET request and print out recieved home page
+        secure_socket.send(get_request.encode("ascii"))
+        response = self.read_response(secure_socket)
+        print(response)
+
 
 
 
