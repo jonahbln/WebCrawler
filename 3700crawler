@@ -260,6 +260,7 @@ class Crawler:
         visited_sites = []
         for site in sites:
             if site in visited_sites:
+                sites.remove(site)
                 continue
             print("visitng site: " + site) 
             visited_sites += site
@@ -283,9 +284,13 @@ class Crawler:
             headers, body = self.parse_http_response(data)
             # print("Parsed Headers:", headers)
             # print("Body:", body)
-            if "flag" in body:
+            if "secret_flag" in body:
                 print("DETECTED SECRET FLAG")
+                print(body)
+                exit()
             sites += self.get_sites_from_html(response)
+            sites = list(set(sites))
+            sites.remove(site)
             print("sites to search: " + str(len(sites)))
 
 
