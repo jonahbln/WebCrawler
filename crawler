@@ -28,7 +28,7 @@ class Crawler:
         self.make_connection(0.5)
 
         # Login to Fakebook
-        login_response = self.login(self.username, self.password)
+        login_response = self.login()
 
         # parse the login response into header and body
         headers, body = self.parse_http_response(login_response)
@@ -54,9 +54,9 @@ class Crawler:
         # loop through sites, going deeper until secret flags are found
         while sites: 
             site = sites.pop(0)  
-            # skip a site if it has already been visited
-            if site in visited_sites:
-                continue  
+            # skip a site if it has already been visited or it is outside of the fakebook domain
+            if site in visited_sites or "fakebook" not in site:
+                continue
 
             # visit the site using GET request
             response = self.visit_site(site)
@@ -93,6 +93,7 @@ class Crawler:
             for key in found:
                 print(key)
             keys.extend(found)
+            # once all 5 keys found, break out of the while loop
             if len(keys) == 5:
                 break
 
@@ -233,7 +234,7 @@ class Crawler:
         return
 
 
-    def login(self, username, password):
+    def login(self):
         request = (
             f"GET /accounts/login/ HTTP/1.1\r\n"
             f"Host: {self.server}\r\n"
