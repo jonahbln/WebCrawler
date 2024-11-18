@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+
+import argparse
+import socket
+import ssl
+import urllib.parse
+import re
+import time
+
+#print(ssl.__file__)  #
+
+DEFAULT_SERVER = "proj5.3700.network"
+SERVER = "fakebook.khoury.northeastern.edu"
+IP = "129.10.110.70"
+DEFAULT_PORT = 443
+
+LOGIN_PASSWORD = "b69dc6eb8235482b5c329f8714c582874b8cfd1ee8ce090fed82015e5c101554"
+LOGIN_USERNAME = "dankowskihealey.f"
+
+
+class Crawler:
+    def __init__(self, args):
+        self.server = args.server
+        self.port = args.port
+        self.username = args.username
+        self.password = args.password
+
+    def parse_http_response(self, response):
+        # Split response into headers and body
+        parts = response.split("\r\n\r\n", 1)  # Split only once
+        if len(parts) < 2:
+            print("Invalid HTTP response format")
+            return None, None
+
+        headers_raw, body = parts
+        headers = {}
+
+        # Split headers into lines and parse each header
+        header_lines = headers_raw.split("\r\n")
+        for line in header_lines[1:]:
+            if ": " in line:
+                name, value = line.split(": ", 1)
+                headers[name.lower()] = value  
+
+        return headers, body
+
+    # Example usage
+    def get_csrf_token_from_headers(self, headers):
+        # Look for a specific header value
+        if "set-cookie" in headers:
+            #print(f"in get csrf token Set-Cookie: {headers['set-cookie']}")
+            # Extract the CSRF token from the cookie if needed
+            # Example: Split cookies by ';' and find the token
+            cookies = headers["set-cookie"].split(";")
+            for cookie in cookies:
+                if "csrftoken" in cookie.lower():
+                    csrf_token = cookie.split("=")[1]
+                    #print(f"Extracted CSRF token from Set-Cookie: {csrf_token}")
+                    return csrf_token
+        return None
+
+    # Example usage
+    def get_session_id_from_headers(self, headers):
+        # Look for a specific header value
+        if "set-cookie" in headers:
+            #print(f"Set-Cookie for session: {headers['set-cookie']}")
+            # Extract the CSRF token from the cookie if needed
+            # Example: Split cookies by ';' and find the token
+            cookies = headers["set-cookie"].split(";")
+            for cookie in cookies:
+                if "sessionid" in cookie.lower():
+                    session = cookie.split("=")[1]
+                    #print(f"Extracted session id from Set-Cookie: {session}")
+                    return session
+        return None
+
+
+    def get_csrf_token_from_html(self, body):
+        # Extract CSRF token from the HTML form
+        match = re.search(r'name="csrfmiddlewaretoken" value="(.+?)"', body)
+        if match:
+            csrf_token = match.group(1)
+            return csrf_token
+        return None
+    
+    def get_sites_from_html(self, html):
+        return re.findall(r'<a href="(/fakebook/[^"]+?)">', html)
+
+    def get_secret_from_html(self, html):
+        return re.findall(r"<h3 class='secret_flag' style=\"color:red\">FLAG: ([a-zA-Z0-9]{64})</h3>", html)
+
+    def read_response(self, socket):
+        response = b""  
+        headers = None
+        content_length = None
+        body_start = None
+
+        while True:
+            try:
+                # Read data in chunks
+                chunk = socket.recv(1028)
+                if not chunk: 
+                    break
+                response += chunk
+
+                # Parse headers if not already parsed
+                if headers is None:
+                    try:
+                        # Split headers and body if they exist
+                        headers, body_start = response.split(b"\r\n\r\n", 1)
+                        headers = headers.decode("ascii", errors="replace")
+                        
+                        # Look for Content-Length header
+                        for line in headers.split("\r\n"):
+                            if line.lower().startswith("content-length:"):
+                                content_length = int(line.split(":")[1].strip())
+                                break
+                    except ValueError:
+                        # Headers not fully received yet, continue reading
+                        continue
+
+                # If Content-Length is known, stop when full body is received
+                if content_length is not None:
+                    if len(body_start) >= content_length:
+                        break
+            except TimeoutError:  # SSL-wrapped socket raises TimeoutError
+                break
+            except Exception as e:  # Handle all other exceptions
+                print(f"Error reading from socket: {e}")
+                break
+
+        # Decode the full response and return it as a single string
+        try:
+            return response.decode("ascii", errors="replace")
+        except Exception as e:
+            print(f"Error decoding response: {e}")
+            return response.decode("ascii", errors="ignore")  
+
+    def make_connection(self, timeout):
+        raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw_socket.connect((self.server, self.port))
+        #print(f"Connected to {self.server}:{self.port} via TCP")
+
+        # Create an SSL context and wrap the socket
+        context = ssl._create_unverified_context()
+        secure_socket = context.wrap_socket(raw_socket, server_hostname=self.server)
+        secure_socket.settimeout(timeout)
+        return secure_socket
+
+
+    def login(self, secure_scoket, username, password):
+        request = (
+            f"GET /accounts/login/ HTTP/1.1\r\n"
+            f"Host: {self.server}\r\n"
+            f"Connection: keep-alive\r\n\r\n"
+        )
+        secure_scoket.send(request.encode('ascii'))
+        time.sleep(0.1) 
+        
+        data = self.read_response(secure_scoket); 
+
+        headers, body = self.parse_http_response(data)
+
+        # Extract CSRF token
+        csrf_token = self.get_csrf_token_from_headers(headers)
+        html_csrf_token = self.get_csrf_token_from_html(data)  
+
+        # Prepare POST request body
+        body = {
+            "username": self.username,
+            "password": self.password,
+            "csrfmiddlewaretoken": html_csrf_token,
+            "next": ""
+        }
+        encoded_body = urllib.parse.urlencode(body)
+
+        # Prepare HTTP POST request
+        headers = {
+            "Host": self.server,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Length": str(len(encoded_body)),
+            "Cookie": f"csrftoken={csrf_token}",  
+            "Connection": "keep-alive",
+        }
+        headers_string = "\r\n".join(f"{key}: {value}" for key, value in headers.items())
+
+        request = (
+            f"POST /accounts/login/ HTTP/1.1\r\n"
+            f"{headers_string}\r\n\r\n"
+            f"{encoded_body}"
+        )
+        secure_scoket.send(request.encode("ascii"))
+        time.sleep(0.1)
+
+        # Read the full HTTP response
+        response = self.read_response(secure_scoket)
+        return response
+
+    def get_homepage(self, secure_socket, session_id):
+        # NEW: Send GET request to /fakebook/
+        get_request = (
+            f"GET /fakebook/ HTTP/1.1\r\n"
+            f"Host: {self.server}\r\n"
+            f"Connection: keep-alive\r\n"
+            f"Cookie: sessionid={session_id}\r\n"
+            f"\r\n"
+        )
+
+        # Send GET request and print out recieved home page
+        secure_socket.send(get_request.encode("ascii"))
+        response = self.read_response(secure_socket)
+        return response
+
+
+    def run(self):
+        # Connect to the server
+        secure_socket = self.make_connection(0.5)
+
+        # Login to Fakebook
+        login_response = self.login(secure_socket, self.username, self.password)
+
+        # parse the login response into header and body
+        headers, body = self.parse_http_response(login_response)
+
+        # pull the session id to use in all future cookies
+        session_id = self.get_session_id_from_headers(headers)
+        # print("Raw Response:\n", login_response)
+        # print("Session ID :\n", session_id)
+
+        # get the homepage now that we are logged in
+        homepage_response = self.get_homepage(secure_socket, session_id)
+        
+        # parse the headers and body of the homepage
+        headers, body = self.parse_http_response(homepage_response)
+        session_id = self.get_session_id_from_headers(headers)
+
+        # pull the crawlable sites from the homepage
+        sites = self.get_sites_from_html(homepage_response)
+        sites_searched = 0
+        visited_sites = []
+        keys = []
+        
+        secure_socket.settimeout(.01)
+
+        # loop through sites, going deeper until secret flags are found
+        while sites: 
+            site = sites.pop(0)  
+            if site in visited_sites:
+                continue  
+            visited_sites.append(site)
+            sites_searched += 1
+            #print("Sites searched: ", sites_searched)
+            request = (
+                f"GET {site} HTTP/1.1\r\n"
+                f"Host: {self.server}\r\n"
+                f"Connection: keep-alive\r\n"
+                f"Cookie: sessionid={session_id}\r\n"
+                f"Referer: https://{self.server}/accounts/login/\r\n"
+                f"Origin: https://{self.server}\r\n"
+                f"Accept-Language: en-us\r\n\r\n"
+            )
+            # Connect to the server
+            secure_socket.send(request.encode('ascii'))
+            time.sleep(0.02)  # 100ms delay before reading
+            
+            response = self.read_response(secure_socket); 
+
+            # headers, body = self.parse_http_response(data)
+            # print("Parsed Headers:", headers)
+            # print("Body:", body)
+            found = self.get_secret_from_html(response)
+            for key in found:
+                print(key, "\n")
+            keys.extend(found)
+            new_sites = self.get_sites_from_html(response)
+            #for new_site in new_sites:
+                #print(new_site)
+            new_sites = list(set(new_sites) - set(visited_sites)) 
+            
+            sites.extend(new_sites)
+            #print("sites to search: " + str(len(sites)))
+        
+        #for key in keys:
+            #print(key, "\n")
+
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='crawl Fakebook')
+    parser.add_argument('-s', dest="server", type=str, default=SERVER, help="The server to crawl")
+    parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="The port to use")
+    parser.add_argument('username', type=str, help="The username to use")
+    parser.add_argument('password', type=str, help="The password to use")
+    args = parser.parse_args()
+    sender = Crawler(args)
+    sender.run()
