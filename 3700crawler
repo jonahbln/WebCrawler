@@ -257,7 +257,12 @@ class Crawler:
 
         print("Pulled sites from html")
         sites = self.get_sites_from_html(response)
-        for site in sites:     
+        visited_sites = []
+        for site in sites:
+            if site in visited_sites:
+                continue
+            print("visitng site: " + site) 
+            visited_sites += site
             request = (
                 f"GET {site} HTTP/1.1\r\n"
                 f"Host: {self.server}\r\n"
@@ -274,10 +279,15 @@ class Crawler:
             
             data = self.read_response(secure_socket); 
 
-            print("Response:\n%s" % data)
+            # print("Response:\n%s" % data)
             headers, body = self.parse_http_response(data)
-            print("Parsed Headers:", headers)
-            print("Body:", body)
+            # print("Parsed Headers:", headers)
+            # print("Body:", body)
+            if "flag" in body:
+                print("DETECTED SECRET FLAG")
+            sites += self.get_sites_from_html(response)
+            print("sites to search: " + str(len(sites)))
+
 
 
 if __name__ == "__main__":
