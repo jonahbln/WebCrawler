@@ -94,7 +94,14 @@ class Crawler:
         #         site_list = match.group(1)
         #         print(f"Extracted sites from HTML: {site_list}")
         #         return site_list
-        return re.findall(r'<li><a href="(.+?)">', html)
+        print("In get sites from html")
+        print(html)
+        print("STOP")
+        new_sites = re.findall(r'<li><a href="(.+?)">', html)
+        for site in new_sites:
+            print(site)
+
+        return re.findall(r'<a href="(/fakebook/[^"]+?)">', html)
 
     def read_response(self, socket):
         response = b""  # Initialize an empty response buffer
@@ -163,7 +170,7 @@ class Crawler:
         # Create an SSL context and wrap the socket
         context = ssl._create_unverified_context()
         secure_socket = context.wrap_socket(raw_socket, server_hostname=self.server)
-        secure_socket.settimeout(5)
+        secure_socket.settimeout(.5)
 
 
         # Connect to the server
@@ -257,13 +264,17 @@ class Crawler:
 
         print("Pulled sites from html")
         sites = self.get_sites_from_html(response)
+        sites_searched = 0
         visited_sites = []
-        for site in sites:
+        while sites:  # Continue while there are elements in the sites list
+            site = sites.pop(0)  # Get the first element and remove it from the list
+
             if site in visited_sites:
-                sites.remove(site)
-                continue
+                continue  # Skip already visited sites
             print("visitng site: " + site) 
-            visited_sites += site
+            visited_sites.append(site)
+            sites_searched += 1
+            print("Sites searched: ", sites_searched)
             request = (
                 f"GET {site} HTTP/1.1\r\n"
                 f"Host: {self.server}\r\n"
@@ -280,17 +291,22 @@ class Crawler:
             
             data = self.read_response(secure_socket); 
 
-            # print("Response:\n%s" % data)
-            headers, body = self.parse_http_response(data)
+            print("Response:\n%s" % data)
+            #headers, body = self.parse_http_response(data)
             # print("Parsed Headers:", headers)
             # print("Body:", body)
-            if "secret_flag" in body:
+            if "secret_flag" in response:
                 print("DETECTED SECRET FLAG")
                 print(body)
                 exit()
-            sites += self.get_sites_from_html(response)
-            sites = list(set(sites))
-            sites.remove(site)
+            new_sites = self.get_sites_from_html(data)
+            for new_site in new_sites:
+                print(new_site)
+            new_sites = list(set(new_sites) - set(visited_sites))  # Remove duplicates and visited sites
+            
+            sites.extend(new_sites)
+            #sites = list(set(sites))
+            #sites.remove(site)
             print("sites to search: " + str(len(sites)))
 
 
