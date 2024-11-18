@@ -151,18 +151,7 @@ class Crawler:
             print(f"Error decoding response: {e}")
             return response.decode("ascii", errors="ignore")  # Fallback decoding
 
-
-
-
-    def run(self):
-        request = (
-            f"GET /accounts/login/ HTTP/1.1\r\n"
-            f"Host: {self.server}\r\n"
-            f"Connection: keep-alive\r\n\r\n"
-        )
-        print("Request to %s:%d" % (self.server, self.port))
-        print(request)
-        
+    def make_connection(self, timeout):
         raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw_socket.connect((self.server, self.port))
         print(f"Connected to {self.server}:{self.port} via TCP")
@@ -170,29 +159,32 @@ class Crawler:
         # Create an SSL context and wrap the socket
         context = ssl._create_unverified_context()
         secure_socket = context.wrap_socket(raw_socket, server_hostname=self.server)
-        secure_socket.settimeout(.5)
+        secure_socket.settimeout(timeout)
+        return secure_socket
 
 
-        # Connect to the server
-        #secure_socket.connect((self.server, self.port))
+    def login(self, secure_scoket, username, password):
+        request = (
+            f"GET /accounts/login/ HTTP/1.1\r\n"
+            f"Host: {self.server}\r\n"
+            f"Connection: keep-alive\r\n\r\n"
+        )
+        print("Request to %s:%d" % (self.server, self.port))      
         print(request.encode('ascii'))
-        secure_socket.send(request.encode('ascii'))
+        secure_scoket.send(request.encode('ascii'))
         time.sleep(0.1)  # 100ms delay before reading
         
-        data = self.read_response(secure_socket); 
+        data = self.read_response(secure_scoket); 
 
         print("Response:\n%s" % data)
         headers, body = self.parse_http_response(data)
         print("Parsed Headers:", headers)
         print("Body:", body)
 
-
-
         # Extract CSRF token
         csrf_token = self.get_csrf_token_from_headers(headers)
         print("CSRF Token:", csrf_token)
         html_csrf_token = self.get_csrf_token_from_html(data)  
-
 
         # Prepare POST request body
         body = {
@@ -210,9 +202,9 @@ class Crawler:
             "Content-Length": str(len(encoded_body)),
             "Cookie": f"csrftoken={csrf_token}",  # Include CSRF token in Cookie
             "Connection": "keep-alive",
-          #  "Referer": f"https://{self.server}/accounts/login/",
+            #  "Referer": f"https://{self.server}/accounts/login/",
             #   "Origin": f"https://{self.server}",
-           # "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
+            # "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
         }
         headers_string = "\r\n".join(f"{key}: {value}" for key, value in headers.items())
 
@@ -221,29 +213,16 @@ class Crawler:
             f"{headers_string}\r\n\r\n"
             f"{encoded_body}"
         )
-        
         print("HTTP POST Request:\n", request)
 
-
-        secure_socket.send(request.encode("ascii"))
+        secure_scoket.send(request.encode("ascii"))
         time.sleep(0.1)
 
-
         # Read the full HTTP response
-        response = self.read_response(secure_socket)
+        response = self.read_response(secure_scoket)
+        return response
 
-        headers, body = self.parse_http_response(response)
-        print("headers")
-        print(headers)
-        print("body")
-        print(body)
-        #csrf_token = self.get_csrf_token_from_headers(headers)
-        session_id = self.get_session_id_from_headers(headers)
-
-        print("Raw Response:\n", response)
-        #print("New CSRF Header Cookie:\n", csrf_token)
-        print("Session ID :\n", session_id)
-
+    def get_homepage(self, secure_socket, session_id):
         # NEW: Send GET request to /fakebook/
         get_request = (
             f"GET /fakebook/ HTTP/1.1\r\n"
@@ -258,17 +237,44 @@ class Crawler:
         # Send GET request and print out recieved home page
         secure_socket.send(get_request.encode("ascii"))
         response = self.read_response(secure_socket)
-        print(response)
-        headers, body = self.parse_http_response(response)
-        session_id = self.get_session_id_from_headers(headers)
+        return response
 
-        print("Pulled sites from html")
-        sites = self.get_sites_from_html(response)
+
+    def run(self):
+        # Connect to the server
+        secure_socket = self.make_connection(0.5)
+
+        # Login to Fakebook
+        login_response = self.login(secure_socket, self.username, self.password)
+
+        # parse the login response into header and body
+        headers, body = self.parse_http_response(login_response)
+        # print("headers")
+        # print(headers)
+        # print("body")
+        # print(body)
+
+        # pull the session id to use in all future cookies
+        session_id = self.get_session_id_from_headers(headers)
+        # print("Raw Response:\n", login_response)
+        # print("Session ID :\n", session_id)
+
+        # get the homepage now that we are logged in
+        homepage_response = self.get_homepage(secure_socket, session_id)
+        
+        # parse the headers and body of the homepage
+        headers, body = self.parse_http_response(homepage_response)
+        session_id = self.get_session_id_from_headers(headers)
+        # print(homepage_response)
+
+        # pull the crawlable sites from the homepage
+        sites = self.get_sites_from_html(homepage_response)
         sites_searched = 0
         visited_sites = []
+
+        # loop through sites, going deeper until secret flags are found
         while sites:  # Continue while there are elements in the sites list
             site = sites.pop(0)  # Get the first element and remove it from the list
-
             if site in visited_sites:
                 continue  # Skip already visited sites
             print("visitng site: " + site) 
@@ -289,9 +295,9 @@ class Crawler:
             secure_socket.send(request.encode('ascii'))
             time.sleep(0.1)  # 100ms delay before reading
             
-            data = self.read_response(secure_socket); 
+            response = self.read_response(secure_socket); 
 
-            print("Response:\n%s" % data)
+            print("Response:\n%s" % response)
             #headers, body = self.parse_http_response(data)
             # print("Parsed Headers:", headers)
             # print("Body:", body)
@@ -299,14 +305,12 @@ class Crawler:
                 print("DETECTED SECRET FLAG")
                 print(body)
                 exit()
-            new_sites = self.get_sites_from_html(data)
+            new_sites = self.get_sites_from_html(response)
             for new_site in new_sites:
                 print(new_site)
             new_sites = list(set(new_sites) - set(visited_sites))  # Remove duplicates and visited sites
             
             sites.extend(new_sites)
-            #sites = list(set(sites))
-            #sites.remove(site)
             print("sites to search: " + str(len(sites)))
 
 
